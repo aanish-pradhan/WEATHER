@@ -205,8 +205,20 @@ obs_f <- (obs - 273.15) * 9/5 + 32
 orig <- cbind(temp_dec, obs_f)
 adj <- cbind(adj_f, obs_f)
 
-
-widths <- rep(0.5, 200 * 31)
+# ggmatplot plots several columns of a matrix at once as separate lines. When 
+# ggmatplot does this, it considers that there is a total of n * p number of 
+# datapoints in the visualization where n is the number of datapoints per 
+# column and p is the number of columns. Most ggplot2 extension packages 
+# (e.g., ggmatplot, ggcorplot, etc.) work by calling underlying ggplot2 
+# functions. So, standard methods of modifying plot still mostly apply. In this 
+# case, to adjust the width of the line, we supply the geom_line() function's 
+# argument with values. However, since there are n * p datapoints, we have to 
+# supply the argument with n * p datapoints. In this case, the first 200 * 30
+# datapoints encode the line width of the first 6000 datapoints which 
+# correspond to the ensembles. The last 200 datapoints correspond to the 
+# observed values. This line is the one we want to bold, so we replace the last 
+# 200 datapoints with a larger value.
+widths <- rep(0.5, 200 * 31) # n = 200, p = 31, default linewidth is 0.5
 widths[6001:6200] <- rep(1, 200)
 
 plt <- ggmatplot(x = 1:200, y = orig[1:200,], plot_type = "line", 
