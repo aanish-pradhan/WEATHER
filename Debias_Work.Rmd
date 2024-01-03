@@ -1,16 +1,23 @@
 ---
 title: "Debias work"
-author: "Adam White"
+author:
+	- Aanish Pradhan
+	- Adam White
 date: "`r Sys.Date()`"
 output: html_document
 ---
 
+```{r Packages}
+# IMPORT PACKAGES
+library(arrow)
+library(lubridate)
+library(tidyverse)
+library(ggmatplot)
+```
+
+
 # DATA COLLECTION SECTION 1
 ```{r}
-
-library(tidyverse) # if not installed run install.packages('tidyverse')
-library(arrow) # install.packages('arrow')
-library(lubridate) # install.packages('lubridate')
 # Observed weather
 obs_met <- read_csv("https://s3.flare-forecast.org/targets/fcre_v2/fcre/observed-met_fcre.csv")
 
@@ -194,43 +201,36 @@ temp_dec <- (temp_june - 273.15) * 9/5 + 32
 obs_f <- (obs - 273.15) * 9/5 + 32
 ```
 
-```{r}
-library(ggmatplot)
+```{r Debiasing Visualization}
 orig <- cbind(temp_dec, obs_f)
 adj <- cbind(adj_f, obs_f)
 
 
-plt <- ggmatplot(x = 1:200, y = orig[1:200,], plot_type = "line",
-                 color = c(rep("blue", 30), "black"),
-                 linetype = c(rep("solid", 31))) 
-plt = plt + xlab("Hours Ahead") + ylab("Air Temperature (F)") +
-  ggtitle("Biased Ensembles and Observed Temperature")
+widths <- rep(0.5, 200 * 31)
+widths[6001:6200] <- rep(1, 200)
 
-
-
+plt <- ggmatplot(x = 1:200, y = orig[1:200,], plot_type = "line", 
+	color = c(rep("blue", 30), "black"), linetype = c(rep("solid", 31)), 
+		linewidth = widths) + 
+	labs(title = "Biased Air Temperature Ensembles",
+		 x = "Hours Ahead",
+		 y = "Air Temperature (°F)") + 
+	theme(legend.position = "none")
 
 plt3 <- ggmatplot(x = 1:200, y = adj[1:200,], plot_type = "line",
-                 color = c(rep("blue", 30), "black"),
-                 linetype = c(rep("solid", 31))) 
-plt3 = plt3 + xlab("Hours Ahead") + ylab("Air Temperature (F)") +
-  ggtitle("Debiased Ensembles and Observed Temperature")
+	color = c(rep("blue", 30), "black"), linetype = c(rep("solid", 31)), 
+		linewidth = widths) +
+	labs(title = "Debiased Air Temperature Ensembles",
+		 x = "Hours Ahead",
+		 y = "Air Temperature (°F)") + 
+	theme(legend.position = "none")
 
-
-par(mfrow = c(2,1))
-
+par(mfrow = c(2,1)) # 2 x 1 subplot
 plt
 plt3
-````
+```
 
-
-
-
-
-
-```{r}
-
-
-
+```{r Horizon Spread Modification Factor Visualization}
 p4 <- ggplot() + 
   xlab("Horizon (Days)") + ylab("Spread Modification Scalar") + 
   ggtitle("Spread Modification Factor versus Predicted Days Ahead")
@@ -240,10 +240,4 @@ p4 <- p4 + geom_line(aes(x = 1:35, y = 0.6 + 2.5*exp(-0.15 * 1:35),
 
 p4 <- p4 + theme(legend.position = "none")
 p4
-
-
-
-
-
-
 ````
