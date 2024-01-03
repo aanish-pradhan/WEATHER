@@ -7,6 +7,7 @@
 .RDataTmp
 
 # User-specific files
+.Rprofile
 .Ruserdata
 
 # Example code in package build process
@@ -35,6 +36,9 @@ vignettes/*.pdf
 # Temporary files created by R markdown
 *.utf8.md
 *.knit.md
+
+# R Environment
+renv/
 
 # R Environment Variables
 .Renviron
