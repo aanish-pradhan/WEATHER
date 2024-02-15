@@ -1,0 +1,385 @@
+---
+title: "Horizon Calibration"
+author:
+	- "Adam White"
+	- "Aanish Pradhan"
+date: "`r Sys.Date()`"
+output: pdf_document
+---
+
+
+```{r}
+# DATA COLLECTION SECTION 1
+
+library(dplyr)
+library(tidyverse) # if not installed run install.packages('tidyverse')
+library(arrow) # install.packages('arrow')
+library(lubridate) # install.packages('lubridate')
+# Observed weather
+obs_met <- read_csv("https://s3.flare-forecast.org/targets/fcre_v2/fcre/observed-met_fcre.csv")
+
+# Forecasted weather
+forecast_dir <- arrow::s3_bucket(bucket = "drivers/noaa/gefs-v12/stage2/parquet/0",
+                                 endpoint_override =  "s3.flare-forecast.org", 
+                                 anonymous = TRUE)
+forecast_dates <- seq.Date(lubridate::as_date('2021-06-01'), lubridate::as_date('2021-06-30'), by = 'day')
+
+
+# running this will show you what the column names are
+arrow::open_dataset(forecast_dir) 
+
+#this dataset is VERY large and needs to be filtered before collecting
+forecasted_met <- arrow::open_dataset(forecast_dir) |> 
+  filter(site_id == 'fcre', # Falling Creek Reservoir (site_id code)
+         reference_datetime %in% forecast_dates) |> 
+  # you can also filter/select based on other columns in the dataset
+  # collect brings the data into your local environment
+  collect()
+
+#===================================#
+# Do join
+# Wrangle the data into the same formats
+forecasted_met <- 
+  forecasted_met |> 
+  tidyr::pivot_wider(names_from = variable, 
+                     id_cols = c(horizon, parameter, reference_datetime, datetime),
+                     values_from = prediction) |>
+  
+  # calculate wind speed from eastward and northward directions
+  dplyr::mutate(wind_speed = sqrt(eastward_wind^2 + northward_wind^2)) |> 
+  dplyr::select(#'site_id', 
+                #'height',
+                'horizon',
+                'parameter',
+                'reference_datetime', 
+                'datetime', 
+                "air_temperature",
+                "air_pressure",
+                "relative_humidity",
+                "surface_downwelling_longwave_flux_in_air", 
+                "surface_downwelling_shortwave_flux_in_air",
+                "precipitation_flux",
+                "wind_speed") |> 
+  tidyr::pivot_longer(cols = air_temperature:wind_speed,
+                      names_to = 'variable', values_to = 'prediction') 
+
+met_joined <- dplyr::inner_join(forecasted_met, 
+                                obs_met, 
+                                by = c('datetime', 'variable'))
+```
+
+
+```{r}
+# extracting just the specific variables we would like to look at for June
+air_temp_june = met_joined[which(met_joined$variable == 'air_temperature'),]
+
+# arrange them all by parameter (ensemble num) and then only every 24 hours
+# ordering by ensemble
+air_temp_june = arrange(air_temp_june, parameter)
+
+# every 24 hours FOR NOW -------------------- CHANGE LATER
+#air_temp_june = air_temp_june[which(air_temp_june$horizon %% 24 == 0),]
+
+# creating wide tables for every covariate
+obs_june_temp = pivot_wider(data = air_temp_june, id_cols = c(horizon, datetime), 
+            names_from = parameter, 
+            values_from = 'observation')
+air_temp_june = pivot_wider(data = air_temp_june, id_cols = c(horizon, datetime, 
+                                                              reference_datetime), 
+            names_from = parameter, 
+            values_from = 'prediction')
+
+# orderign by date time not horizon 
+air_temp_june = arrange(air_temp_june, datetime)
+
+# removing the horizon, datetime, and final column (NA present)
+horizon = air_temp_june$horizon
+horizon = air_temp_june$horizon #saving for later usage
+ref_datetime <- air_temp_june$reference_datetime
+date_time <- air_temp_june$datetime
+air_temp_june = air_temp_june[-1:-3]
+air_temp_june = air_temp_june[-31]
+
+# convert all the dataframes to matrices
+temp_june <<- as.matrix(air_temp_june)
+```
+
+
+## observed data collection
+```{r}
+obs_june_temp = arrange(obs_june_temp, datetime)
+#obs_june_temp = obs_june_temp[which(obs_june_temp$horizon %% 24 == 0), ]
+obs_june_temp = obs_june_temp$`1`
+obs <<- as.numeric(obs_june_temp)
+```
+
+
+
+# Ensemble Transformation Optimization
+```{r, eval = FALSE}
+
+# Adjusts the predicted temperature ensembles so the mean resembles the 
+# observed data
+slope_int_loss_func <- function(b, X, Y){
+  X1 <- b[1] * X + b[2]
+  score = scoringRules::logs_sample(y = Y, dat = X1)
+  score[is.infinite(score)] <- mean(
+      score[!is.infinite(scoringRules::logs_sample(y = obs, dat = X1))])
+  return(sum(score))
+}
+
+b = c(1,0)
+
+optim_transformer <- optim(par = b, fn = slope_int_loss_func, X = temp_june, 
+                           Y = obs, method = "BFGS")
+
+params <- optim_transformer$par
+
+
+adj_temp_ens <- as.matrix(params[1] * temp_june + params[2])
+
+
+```
+
+
+```{r}
+
+dat <- c(70,70.5,71,71.5,72,
+         73,74,72,74.5,73.5, 
+         69,70,68,71,72, 
+         74,75,76,77,78,
+         72,73,75,77,78)
+
+biased <- matrix(dat, nrow = 5, ncol = 5, byrow = TRUE)
+
+biased = as.matrix(biased, nrow = 5, ncol = 5, byrow = T)
+
+y = as.numeric(c(79, 81, 78, 83, 82))
+
+optim_debias <- optim(par = b, fn = slope_int_loss_func, X = biased, Y = y, 
+                      method = "BFGS")
+
+p <- optim_debias$par
+
+debiased <- p[1] * biased + p[2]
+
+both_obs_bias <- cbind(biased, y)
+both_obs_debias <- cbind(debiased, y)
+
+
+p1 <- ggmatplot(x = c(1:5), y = both_obs_bias, plot_type = 'line',
+                linetype = 'solid',
+                color = c(rep("blue", 5), "black"))
+p1 <- p1 + xlab("Day") + ylab("Air Temperature (F)") +
+  ggtitle("Biased Ensembles and Recorded Temperature")
+p1
+
+p2 <- ggmatplot(x = c(1:5), y = both_obs_debias, plot_type = 'line',
+                linetype = 'solid',
+                color = c(rep("blue", 5), "black"))
+p2 <- p2 + xlab("Day") + ylab("Air Temperature (F)") +
+  ggtitle("Debiased Ensembles and Recorded Temperature")
+
+p2
+```
+
+
+
+# Spread Modification Optimization
+```{r}
+adj_temp_ens <- as.matrix(0.9986456 * temp_june + 2.8400530) # these were 
+#values found before but for speed I am reusing them
+
+
+days = horizon / 24
+
+# adjusts the spread relative to the continuous form of horizon (horizon / 24)
+spread_loss_func <- function(b, X, horizon, Y){
+  means <- rowMeans(X)
+  inflate = b[1] + b[2]*exp(-b[3] * days)
+  X1 <- inflate * (X - means) + means
+  return(sum(scoringRules::logs_sample(y = Y, dat = X1)))
+}
+
+b = c(0.6, 2.5, 0.15)
+
+optim_horizon <- optim(par = b, fn = spread_loss_func, X = adj_temp_ens,
+                       horizon = horizon, Y = obs, method = "L-BFGS")
+
+
+p = optim_horizon$par
+
+plot(x = (1:840)/24, y = p[1] + p[2] * exp(-p[3]*(1:840)/24))
+
+horiz = (1:840)/24
+Y = p[1] + p[2] * exp(-p[3]*horiz)
+
+p1 <- ggplot() + geom_point(aes(x = horiz, y = Y)) + xlab("Horizon (Days)") + ylab("Spread Factor") +
+  ggtitle("Optimal Spread Adjustment Values")
+p1
+```
+
+
+
+```{r, eval = FALSE}
+spread_loss_func <- function(b, X, horizon, Y){
+  means <- rowMeans(X)
+  inflate = b[1] + b[2]*exp(-b[3] * days)
+  X1 <- inflate * (X - means) + means
+  return(sum(scoringRules::logs_sample(y = Y, dat = X1)))
+}
+
+b = c(0.6, 2.5, 0.15)
+
+tic = proc.time()
+optim_horizon2 <- optim(par = b, fn = spread_loss_func, X = adj_temp_ens,
+                       horizon = horizon, Y = obs, method = "L-BFGS",
+                       upper = c(5, 10, 1), lower = c(0, 0, 0.0000001))
+toc = proc.time()
+
+print(rbind(optim_horizon$par, optim_horizon2$par))
+
+
+```
+
+
+# Adjusting the Ensemble back
+```{r}
+library(ggmatplot)
+M = rowMeans(adj_temp_ens)
+
+inflation <- p[1] + p[2] * exp(-p[3]*days)
+
+
+final_ens <- inflation * (adj_temp_ens - M) + M
+
+sum(scoringRules::logs_sample(y = obs, dat = final_ens))
+
+sum(scoringRules::logs_sample(y = obs, dat = temp_june)[
+  !scoringRules::logs_sample(y = obs, dat = temp_june) == Inf])
+
+adj_orig_obs <- as.data.frame(cbind(temp_june, final_ens, obs))
+```
+
+```{r}
+air_temp_june = met_joined[which(met_joined$variable == 'air_temperature'),]
+
+# arrange them all by parameter (ensemble num) and then only every 24 hours
+# ordering by ensemble
+air_temp_june = arrange(air_temp_june, parameter)
+
+# every 24 hours FOR NOW -------------------- CHANGE LATER
+#air_temp_june = air_temp_june[which(air_temp_june$horizon %% 24 == 0),]
+
+# creating wide tables for every covariate
+obs_june_temp = pivot_wider(data = air_temp_june, id_cols = c(horizon, datetime), 
+            names_from = parameter, 
+            values_from = 'observation')
+air_temp_june = pivot_wider(data = air_temp_june, id_cols = c(horizon, datetime,
+                                                              reference_datetime), 
+            names_from = parameter, 
+            values_from = 'prediction')
+
+air_temp_june = arrange(air_temp_june, datetime)
+
+indices = which(air_temp_june$reference_datetime == lubridate::as_date('2021-06-01'))
+
+
+one_ref_adj_obs = adj_orig_obs[indices,]
+
+head(one_ref_adj_obs)
+```
+
+```{r}
+
+
+plt <- ggmatplot(x = 1:841, y = one_ref_adj_obs, plot_type = "line",
+                 linetype = c(rep("solid", 61)),
+                 color = c(rep("gray", 30), rep('lightblue', 30), 'red')) 
+plt = plt + xlab("Horizon (Hour)") + ylab("Air Temperature (K)")
+#plt = plt + scale_color_manual(name = "Legend",
+                               #breaks = c("NOAA Temp", "Adj Temp", "Obs Temp"),
+                               #values = c("NOAA Temp" = 'gray',
+                                         # "Adj Temp" = 'lightblue',
+                                         # "Obs Temp" = 'red'))
+
+
+one_ref_adj_obs <- (one_ref_adj_obs  - 273.15) * 9/5 + 32
+
+
+plt2 <- ggmatplot(x = 105:155, y = one_ref_adj_obs[105:155,], plot_type = "line",
+                 linetype = c(rep("solid", 61)),
+                 color = c(rep("#C77CFF", 30), rep('#00A9FF', 30), 'black'))
+plt2 = plt2 + xlab("Hour") + ylab("Air Temperature (F)") + 
+  ggtitle("Adjusted & Original Ensembles Versus Observed")
+
+plt2
+
+```
+
+```{r}
+replace_outliers_apply <- function(matrix_data) {
+  replaced_matrix <- t(apply(matrix_data, 1, function(row) {
+    q_05 <- quantile(row, 0.05)
+    q_95 <- quantile(row, 0.95)
+    row_median <- median(row)
+    
+    replaced_row <- ifelse(row < q_05 | row > q_95, row_median, row)
+    return(replaced_row)
+  }))
+  
+  return(replaced_matrix)
+}
+
+outlierRejectedOriginalEnsembles <- replace_outliers_apply(one_ref_adj_obs[105:155, 1:30])
+outlierRejectedAdjustedEnsembles <- replace_outliers_apply(one_ref_adj_obs[105:155, 31:60])
+outlierRejectedData <- cbind(outlierRejectedOriginalEnsembles, outlierRejectedAdjustedEnsembles, one_ref_adj_obs[105:155, 61])
+ggmatplot(x = 105:155, y = outlierRejectedData, plot_type = "line",
+                 linetype = c(rep("solid", 61)),
+                 color = c(rep("#C77CFF", 30), rep('#00A9FF', 30), 'black')) + 
+	theme(legend.position = "none")
+```
+
+```{r}
+outlierRejectedOriginalMin <- data.frame(apply(outlierRejectedData[, 1:30], 1, min))
+outlierRejectedOriginalMax <- data.frame(apply(outlierRejectedData[, 1:30], 1, max))
+outlierRejectedAdjustedMin <- data.frame(apply(outlierRejectedData[, 31:60], 1, min))
+outlierRejectedAdjustedMax <- data.frame(apply(outlierRejectedData[, 31:60], 1, max))
+observedValues <- data.frame(outlierRejectedData[, 61])
+days <- data.frame((105:155) / 24)
+outlierRejectedDataFinal <- data.frame(days, outlierRejectedOriginalMin, 
+	outlierRejectedOriginalMax, outlierRejectedAdjustedMin, 
+	outlierRejectedAdjustedMax, observedValues)
+colnames(outlierRejectedDataFinal) <- c("days", "originalMin", "originalMax", "adjustedMin", "adjustedMax", "observed")
+
+ggplot(outlierRejectedDataFinal) +
+	geom_ribbon(aes(x = days, ymin = originalMin, ymax = originalMax), fill = "#C77CFF", alpha = 1) + 
+	# geom_ribbon(aes(x = days, ymin = adjustedMin, ymax = adjustedMax), fill = "#00A9FF", alpha = 1) + 
+	geom_line(aes(x = days, y = observed), linewidth = 1) +
+	labs(title = "Observed Air Temperature with Original Ensembles", 
+		 x = "Days Ahead", 
+		 y = "Air Temperature (°F)")
+ggsave("Figures/Observed_Air_Temperature_with_Original_Ensembles.png", dpi = 300)
+
+ggplot(outlierRejectedDataFinal) +
+	# geom_ribbon(aes(x = days, ymin = originalMin, ymax = originalMax), fill = "#C77CFF", alpha = 1) + 
+	geom_ribbon(aes(x = days, ymin = adjustedMin, ymax = adjustedMax), fill = "#00A9FF", alpha = 1) + 
+	geom_line(aes(x = days, y = observed), linewidth = 1) +
+	labs(title = "Observed Air Temperature with Adjusted Ensembles", 
+		 x = "Days Ahead", 
+		 y = "Air Temperature (°F)")
+ggsave("Figures/Observed_Air_Temperature_with_Adjusted_Ensembles.png", dpi = 300)
+
+ggplot(outlierRejectedDataFinal) +
+	geom_ribbon(aes(x = days, ymin = originalMin, ymax = originalMax), fill = "#C77CFF", alpha = 0.6) + 
+	geom_ribbon(aes(x = days, ymin = adjustedMin, ymax = adjustedMax), fill = "#00A9FF", alpha = 0.6) + 
+	geom_line(aes(x = days, y = observed), linewidth = 1) +
+	labs(title = "Observed Air Temperature with Original & Adjusted Ensembles", 
+		 x = "Days Ahead", 
+		 y = "Air Temperature (°F)",
+		 caption = "Observed = Black, Original = Pink, Adjusted = Blue")
+ggsave("Figures/Observed_Air_Temperature_with_Original_and_Adjusted_Ensembles.png")
+```
+
+
+

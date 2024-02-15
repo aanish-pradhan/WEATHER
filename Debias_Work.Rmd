@@ -238,8 +238,12 @@ plt3 <- ggmatplot(x = 1:200, y = adj[1:200,], plot_type = "line",
 	theme(legend.position = "none")
 
 par(mfrow = c(2,1)) # 2 x 1 subplot
+
 plt
+ggsave("Figures/Biased_Air_Temperature_Ensembles.png", dpi = 300)
+
 plt3
+ggsave("Figures/Debiased_Air_Temperature_Ensembles.png", dpi = 300)
 ```
 
 ```{r Horizon Spread Modification Factor Visualization}
